@@ -64,7 +64,7 @@ static long long timestamp()
 }
 
 #define DEST_PORT   8300
-#define MAX_DEPTH   1024
+#define MAX_DEPTH   512
 
 static pthread_mutex_t mutex;
 static long long lastTs[2];
@@ -72,6 +72,7 @@ static std::string url[2];
 static int sock_fd;
 static struct sockaddr_in addr_dest;
 static double depthPack[MAX_DEPTH * 8 + 8];
+static bool valid[2];
 
 static void *depthThread(void *arg)
 {
@@ -79,8 +80,6 @@ static void *depthThread(void *arg)
     bool isHuobi = (id == 1);
 
     pthread_detach(pthread_self());
-
-    memset(depthPack, 0, sizeof(depthPack));
 
     long long ts = timestamp();
     std::string content = curlHttp(url[id], NULL, "", 1000);
@@ -98,12 +97,18 @@ static void *depthThread(void *arg)
     Json::Value value;
     if ((ts > lastTs[id]) && reader.parse(content, value)) {
         lastTs[id] = ts;
+        valid[id] = true;
         Json::Value asks = value["asks"];
         Json::Value bids = value["bids"];
         int askNum = asks.size();
         int bidNum = bids.size();
+        if (askNum > MAX_DEPTH)
+            askNum = MAX_DEPTH;
+        if (bidNum > MAX_DEPTH)
+            bidNum = MAX_DEPTH;
         double ask, bid;
         int n = id * (MAX_DEPTH * 4 + 4);
+        memset(&depthPack[n], 0, sizeof(depthPack) / 2);
         depthPack[n++] = (double)ts;
 	depthPack[n++] = 0.0;
         depthPack[n++] = (double)askNum;
@@ -126,8 +131,10 @@ static void *depthThread(void *arg)
             depthPack[n++] = bids[i][0].asDouble();
             depthPack[n++] = bids[i][1].asDouble();
         }
-        sendto(sock_fd, depthPack, sizeof(depthPack), 0, (const sockaddr *)&addr_dest, sizeof(addr_dest));
-        printf("Depth sent: [%d] %lld, %.2lf, %.2lf\n", id, ts, ask, bid);
+        if (valid[0] && valid[1]) {
+            sendto(sock_fd, depthPack, sizeof(depthPack), 0, (const sockaddr *)&addr_dest, sizeof(addr_dest));
+            printf("Depth sent: [%d] %lld, %.2lf, %.2lf\n", id, ts, ask, bid);
+        }
     }
 
     pthread_mutex_unlock(&mutex);
